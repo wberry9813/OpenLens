@@ -13,7 +13,14 @@ enum LiveActivityReply: Hashable {
 struct SharedConnectionStore {
     struct UnsupportedReply: Error {}
 
-    private static let suiteName = "group.dev.openlens.shared"
+    private static let suiteName: String = {
+        guard let value = Bundle.main.object(
+            forInfoDictionaryKey: "OpenLensAppGroup"
+        ) as? String, !value.isEmpty else {
+            fatalError("Missing OpenLensAppGroup in Info.plist")
+        }
+        return value
+    }()
     private static let baseURLKey = "server_base_url"
     private static let authHeaderKey = "server_auth_header"
 

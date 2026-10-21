@@ -175,6 +175,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: OpenLensActivityWidget/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: OpenLensActivityWidget
+        INFOPLIST_KEY_OpenLensAppGroup: $(OPENLENS_APP_GROUP)
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         LD_RUNPATH_SEARCH_PATHS:
           - $(inherited)

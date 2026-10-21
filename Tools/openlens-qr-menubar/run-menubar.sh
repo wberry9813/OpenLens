@@ -13,7 +13,7 @@ fi
 
 "$SCRIPT_DIR/stop-menubar.sh" >/dev/null 2>&1 || true
 
-TUIST_SKIP_UPDATE_CHECK=1 tuist generate --no-open
+TUIST_SKIP_UPDATE_CHECK=1 tuist generate --path "$SCRIPT_DIR" --no-open
 TUIST_SKIP_UPDATE_CHECK=1 tuist xcodebuild build \
   -workspace "$SCRIPT_DIR/OpenLensRemote.xcworkspace" \
   -scheme "$APP_NAME" \

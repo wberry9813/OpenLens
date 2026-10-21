@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Security
 import ServiceManagement
@@ -206,26 +207,105 @@ final class TunnelRunner: @unchecked Sendable {
 
     private func makeTokenFile(containing token: String) throws -> URL {
         removeTokenFile()
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("openlens-cloudflared-\(UUID().uuidString).token")
-        do {
-            try Data(token.utf8).write(to: url, options: [.atomic, .withoutOverwriting])
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: Int16(0o600))],
-                ofItemAtPath: url.path
-            )
-            tokenFileURL = url
-            return url
-        } catch {
-            try? FileManager.default.removeItem(at: url)
-            throw RemoteAgentError.tokenFileFailure
-        }
+        let url = try Self.makeTokenFile(containing: token)
+        tokenFileURL = url
+        return url
     }
 
     private func removeTokenFile() {
         guard let tokenFileURL else { return }
         try? FileManager.default.removeItem(at: tokenFileURL)
         self.tokenFileURL = nil
+    }
+
+    static func makeTokenFile(
+        containing token: String,
+        in directory: URL = FileManager.default.temporaryDirectory
+    ) throws -> URL {
+        let url = directory.appendingPathComponent("openlens-cloudflared-\(UUID().uuidString).token")
+        try writeTokenFile(containing: token, to: url)
+        return url
+    }
+
+    static func writeTokenFile(containing token: String, to destinationURL: URL) throws {
+        let parentDirectory = destinationURL.deletingLastPathComponent()
+        let tempURL = parentDirectory.appendingPathComponent(".\(destinationURL.lastPathComponent).\(UUID().uuidString).tmp")
+
+        let fd = open(tempURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else {
+            throw RemoteAgentError.tokenFileFailure
+        }
+        var tempFileNeedsCleanup = true
+        defer {
+            if tempFileNeedsCleanup {
+                unlink(tempURL.path)
+            }
+        }
+
+        let data = Data(token.utf8)
+        var totalWritten = 0
+        let writeSuccess = data.withUnsafeBytes { buffer -> Bool in
+            guard let baseAddress = buffer.baseAddress else { return true }
+            while totalWritten < buffer.count {
+                let written = write(fd, baseAddress.advanced(by: totalWritten), buffer.count - totalWritten)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                totalWritten += written
+            }
+            return true
+        }
+
+        guard writeSuccess, totalWritten == data.count else {
+            close(fd)
+            throw RemoteAgentError.tokenFileFailure
+        }
+
+        _ = fchmod(fd, 0o600)
+        #if os(macOS)
+        _ = fcntl(fd, F_FULLFSYNC)
+        #else
+        _ = fsync(fd)
+        #endif
+        close(fd)
+
+        #if os(macOS)
+        let renameResult = renamex_np(tempURL.path, destinationURL.path, UInt32(RENAME_EXCL))
+        #else
+        let renameResult = -1
+        errno = ENOTSUP
+        #endif
+
+        if renameResult == 0 {
+            tempFileNeedsCleanup = false
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: destinationURL.path
+            )
+            return
+        }
+
+        if errno == EEXIST {
+            throw RemoteAgentError.tokenFileFailure
+        }
+
+        if errno == ENOTSUP {
+            if link(tempURL.path, destinationURL.path) == 0 {
+                unlink(tempURL.path)
+                tempFileNeedsCleanup = false
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: Int16(0o600))],
+                    ofItemAtPath: destinationURL.path
+                )
+                return
+            }
+            if errno == EEXIST {
+                throw RemoteAgentError.tokenFileFailure
+            }
+        }
+
+        throw RemoteAgentError.tokenFileFailure
     }
 
     private static func executableURL(bundle: Bundle = .main) throws -> URL {

@@ -787,6 +787,83 @@ struct GatewayIntegrationTests {
         #expect(png.count > 10_000)
     }
 
+    @Test func tokenFileCreationIsAtomicAndSetsRestrictivePermissions() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let token = "test-token-atomic-content-12345"
+        let tokenURL = try TunnelRunner.makeTokenFile(containing: token, in: tempDirectory)
+        defer { try? FileManager.default.removeItem(at: tokenURL) }
+
+        #expect(FileManager.default.fileExists(atPath: tokenURL.path))
+        let contents = try String(contentsOf: tokenURL, encoding: .utf8)
+        #expect(contents == token)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: tokenURL.path)
+        let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        #expect(permissions == 0o600)
+
+        let leftoverTempFiles = try FileManager.default.contentsOfDirectory(atPath: tempDirectory.path)
+            .filter { $0.hasSuffix(".tmp") }
+        #expect(leftoverTempFiles.isEmpty)
+    }
+
+    @Test func tokenFileCreationDoesNotOverwriteExistingTokenAndPreservesContent() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let existingTokenURL = tempDirectory.appendingPathComponent("existing-token.token")
+        let originalContent = "original-secret-token"
+        try Data(originalContent.utf8).write(to: existingTokenURL)
+
+        #expect(throws: RemoteAgentError.tokenFileFailure) {
+            try TunnelRunner.writeTokenFile(containing: "attacker-replacement-token", to: existingTokenURL)
+        }
+
+        let preservedContent = try String(contentsOf: existingTokenURL, encoding: .utf8)
+        #expect(preservedContent == originalContent)
+
+        let leftoverTempFiles = try FileManager.default.contentsOfDirectory(atPath: tempDirectory.path)
+            .filter { $0.hasSuffix(".tmp") }
+        #expect(leftoverTempFiles.isEmpty)
+    }
+
+    @Test func concurrentTokenFileWritesToSameDestinationAllowOnlyOneSuccess() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("token-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let destinationURL = tempDirectory.appendingPathComponent("racing-token.token")
+        let iterations = 10
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var successCount = 0
+        var failureCount = 0
+
+        for i in 0..<iterations {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                do {
+                    try TunnelRunner.writeTokenFile(containing: "token-race-\(i)", to: destinationURL)
+                    lock.withLock { successCount += 1 }
+                } catch {
+                    lock.withLock { failureCount += 1 }
+                }
+            }
+        }
+
+        group.wait()
+        #expect(successCount == 1)
+        #expect(failureCount == iterations - 1)
+        #expect(FileManager.default.fileExists(atPath: destinationURL.path))
+    }
+
     private func connectedSocket(handshakeID: String) async throws -> URLSessionWebSocketTask {
         var request = URLRequest(url: URL(string: "ws://127.0.0.1:49634/remote")!)
         request.setValue(RemoteProtocolVersion.webSocketSubprotocol, forHTTPHeaderField: "Sec-WebSocket-Protocol")
